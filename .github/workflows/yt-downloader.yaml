@@ -1,4 +1,4 @@
-name: '📥 YouTube Download & Archive (Auto-format)'
+name: '📥 YouTube Download & Archive'
 
 on:
   workflow_dispatch:
@@ -15,11 +15,6 @@ on:
         options:
           - 'video'
           - 'audio'
-      quality:
-        description: '🎬 Quality preference (best, 1080p, 720p, 480p, worst)'
-        required: false
-        type: string
-        default: 'best'
       password:
         description: '🔐 Zip password (optional)'
         required: false
@@ -58,92 +53,40 @@ jobs:
             echo "✅ Cookies loaded"
           fi
 
-      - name: 📊 Download from YouTube (Auto-format fallback)
+      - name: 📊 Download from YouTube
         id: download
         run: |
           URL="${{ github.event.inputs.youtube_url }}"
           FORMAT="${{ github.event.inputs.format }}"
-          QUALITY="${{ github.event.inputs.quality }}"
           
           echo "Downloading from: $URL"
-          echo "Format: $FORMAT | Preferred quality: $QUALITY"
           
-          # Base yt-dlp command
-          YT_CMD="yt-dlp --no-check-certificate"
-          
-          # Add cookies if available
+          # Build command
+          YT_CMD="yt-dlp"
           [ -f "cookies.txt" ] && YT_CMD="$YT_CMD --cookies cookies.txt"
           
-          # Download with automatic fallback formats
+          # Simple download - let yt-dlp choose the best available
           if [ "$FORMAT" = "audio" ]; then
-            # Try bestaudio, fallback to any audio
-            $YT_CMD -f "bestaudio/best" \
-                   --extract-audio --audio-format mp3 \
-                   --output "downloaded_file.%(ext)s" "$URL" || \
-            $YT_CMD -f "worstaudio/worst" \
-                   --extract-audio --audio-format mp3 \
-                   --output "downloaded_file.%(ext)s" "$URL"
+            $YT_CMD -x --audio-format mp3 \
+                   --output "downloaded_file.%(ext)s" \
+                   "$URL"
           else
-            # Video download with progressive fallbacks
-            case "$QUALITY" in
-              "best")
-                # Try best video+audio combo, fallback to best single format
-                $YT_CMD -f "bestvideo+bestaudio/best" \
-                       --merge-output-format mp4 \
-                       --output "downloaded_file.%(ext)s" "$URL" || \
-                $YT_CMD -f "best" \
-                       --output "downloaded_file.%(ext)s" "$URL"
-                ;;
-              "1080p")
-                $YT_CMD -f "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best" \
-                       --merge-output-format mp4 \
-                       --output "downloaded_file.%(ext)s" "$URL" || \
-                $YT_CMD -f "best[height<=1080]" \
-                       --output "downloaded_file.%(ext)s" "$URL"
-                ;;
-              "720p")
-                $YT_CMD -f "bestvideo[height<=720]+bestaudio/best[height<=720]/best" \
-                       --merge-output-format mp4 \
-                       --output "downloaded_file.%(ext)s" "$URL" || \
-                $YT_CMD -f "best[height<=720]" \
-                       --output "downloaded_file.%(ext)s" "$URL"
-                ;;
-              "480p")
-                $YT_CMD -f "bestvideo[height<=480]+bestaudio/best[height<=480]/best" \
-                       --merge-output-format mp4 \
-                       --output "downloaded_file.%(ext)s" "$URL" || \
-                $YT_CMD -f "best[height<=480]" \
-                       --output "downloaded_file.%(ext)s" "$URL"
-                ;;
-              "worst")
-                $YT_CMD -f "worstvideo+worstaudio/worst" \
-                       --merge-output-format mp4 \
-                       --output "downloaded_file.%(ext)s" "$URL"
-                ;;
-              *)
-                # Custom quality or default to best
-                $YT_CMD -f "bestvideo[height<=${QUALITY}]+bestaudio/best[height<=${QUALITY}]/best" \
-                       --merge-output-format mp4 \
-                       --output "downloaded_file.%(ext)s" "$URL" || \
-                $YT_CMD -f "best" \
-                       --output "downloaded_file.%(ext)s" "$URL"
-                ;;
-            esac
+            # Just get the best available, don't specify formats
+            $YT_CMD --output "downloaded_file.%(ext)s" "$URL"
           fi
           
           # Check if download succeeded
           DOWNLOADED_FILE=$(ls downloaded_file.* 2>/dev/null | head -n1)
           if [ -z "$DOWNLOADED_FILE" ]; then
-            echo "❌ Download failed! Checking available formats..."
-            yt-dlp --list-formats "$URL"
+            echo "❌ Download failed!"
             exit 1
           fi
           
           mv "$DOWNLOADED_FILE" downloaded_file
           ls -lh downloaded_file
           
-          # Extract video title
-          TITLE=$(yt-dlp --get-title "$URL" 2>/dev/null | sed 's/[\\/:*?"<>|]/_/g')
+          # Extract video title for folder name
+          TITLE=$($YT_CMD --get-title "$URL" 2>/dev/null | sed 's/[\\/:*?"<>|]/_/g')
           echo "TITLE=$TITLE" >> $GITHUB_ENV
 
       - name: 🧠 Prepare folder structure
