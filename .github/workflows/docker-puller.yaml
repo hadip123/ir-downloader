@@ -202,12 +202,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docker-images/
-          git commit -m "🐳 Add Docker image: ${{ github.event.inputs.image_name }}
-          
-Image: ${{ env.FULL_IMAGE }}
-Size: $(du -sh ${{ env.FINAL_DIR }} | cut -f1)
-Compressed: ${{ github.event.inputs.compress }}" || echo "Nothing to commit"
-          git push
+          git commit -m "🐳 Add Docker image: ${{ github.event.inputs.image_name }}"
           
       - name: 🧹 Cleanup temporary files
         if: always()
