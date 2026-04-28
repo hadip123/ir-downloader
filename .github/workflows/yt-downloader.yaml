@@ -65,15 +65,8 @@ jobs:
           YT_CMD="yt-dlp"
           [ -f "cookies.txt" ] && YT_CMD="$YT_CMD --cookies cookies.txt"
           
-          # Simple download - let yt-dlp choose the best available
-          if [ "$FORMAT" = "audio" ]; then
-            $YT_CMD -x --audio-format mp3 \
-                   --output "downloaded_file.%(ext)s" \
-                   "$URL"
-          else
-            # Just get the best available, don't specify formats
+          
             $YT_CMD --output "downloaded_file.%(ext)s" "$URL"
-          fi
           
           # Check if download succeeded
           DOWNLOADED_FILE=$(ls downloaded_file.* 2>/dev/null | head -n1)
