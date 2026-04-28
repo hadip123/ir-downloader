@@ -1,213 +1,155 @@
-name: '🐳 Professional: Pull & Save Docker Image'
+name: '📥 YouTube Download & Archive (with Cookies)'
 
 on:
   workflow_dispatch:
     inputs:
-      image_name:
-        description: '📦 Docker image name (e.g., nginx:latest, ubuntu:22.04)'
+      youtube_url:
+        description: '🔗 YouTube video URL'
         required: true
         type: string
-      registry_url:
-        description: '🏢 Custom registry URL (optional, leave empty for Docker Hub)'
+      format:
+        description: '📁 Format (video/audio)'
+        required: false
+        type: choice
+        default: 'video'
+        options:
+          - 'video'
+          - 'audio'
+      quality:
+        description: '🎬 Quality (best, 1080p, 720p, 480p, worst)'
         required: false
         type: string
-        default: ''
-      registry_username:
-        description: '👤 Registry username (optional)'
-        required: false
-        type: string
-        default: ''
-      registry_password:
-        description: '🔐 Registry password (optional)'
+        default: 'best'
+      password:
+        description: '🔐 Zip password (optional)'
         required: false
         type: string
         default: ''
       split_size:
-        description: '📦 Split size per chunk (default: 95m) e.g., 95m, 100m, 200m'
+        description: '📦 Split size per part (default: 95m) e.g., 95m, 100m, 200m'
         required: false
         type: string
         default: '95m'
-      compress:
-        description: '🗜️ Compress with gzip? (true/false)'
-        required: false
-        type: string
-        default: 'true'
 
 permissions:
-  contents: write  # Important: allow push to repository
+  contents: write
 
 jobs:
-  pull-and-save:
+  download-youtube-and-commit:
     runs-on: ubuntu-latest
     steps:
       - name: 🔄 Checkout repository
         uses: actions/checkout@v4
 
-      - name: ⚙️ Install tools
+      - name: ⚙️ Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pigz pv
-          # Install Docker
-          curl -fsSL https://get.docker.com -o get-docker.sh
-          sudo sh get-docker.sh
-          sudo usermod -aG docker $USER
+          sudo apt-get install -y p7zip-full file ffmpeg
 
-      - name: 🔑 Login to registry (if needed)
-        if: ${{ github.event.inputs.registry_url != '' && github.event.inputs.registry_username != '' }}
+      - name: 📥 Install yt-dlp
         run: |
-          echo "${{ github.event.inputs.registry_password }}" | docker login "${{ github.event.inputs.registry_url }}" \
-            --username "${{ github.event.inputs.registry_username }}" \
-            --password-stdin
+          sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          sudo chmod a+rx /usr/local/bin/yt-dlp
 
-      - name: 📥 Pull Docker image
-        id: pull
+      - name: 🍪 Set up cookies from GitHub Secret
         run: |
-          IMAGE="${{ github.event.inputs.image_name }}"
-          echo "Pulling image: $IMAGE"
-          
-          # If custom registry is provided
-          if [ -n "${{ github.event.inputs.registry_url }}" ]; then
-            FULL_IMAGE="${{ github.event.inputs.registry_url }}/$IMAGE"
+          # Create cookies file from GitHub secret
+          # You MUST add YT_COOKIES to your repository secrets first!
+          if [ -n "${{ secrets.YT_COOKIES }}" ]; then
+            echo "${{ secrets.YT_COOKIES }}" > cookies.txt
+            echo "✅ Cookies file created"
           else
-            FULL_IMAGE="$IMAGE"
+            echo "⚠️ No cookies found. Download may fail for restricted videos."
+            echo "💡 Add YT_COOKIES secret to your repository"
+          fi
+
+      - name: 📊 Download from YouTube
+        id: download
+        run: |
+          URL="${{ github.event.inputs.youtube_url }}"
+          FORMAT="${{ github.event.inputs.format }}"
+          QUALITY="${{ github.event.inputs.quality }}"
+          
+          echo "Downloading from: $URL"
+          echo "Format: $FORMAT | Quality: $QUALITY"
+          
+          # Base yt-dlp command with optional cookies
+          YT_CMD="yt-dlp"
+          
+          # Add cookies if available
+          if [ -f "cookies.txt" ]; then
+            YT_CMD="$YT_CMD --cookies cookies.txt"
           fi
           
-          docker pull "$FULL_IMAGE"
-          if [ $? -ne 0 ]; then exit 1; fi
+          # Add format-specific options
+          if [ "$FORMAT" = "audio" ]; then
+            $YT_CMD -f "bestaudio" --extract-audio --audio-format mp3 \
+                   --output "downloaded_file.%(ext)s" "$URL"
+          else
+            if [ "$QUALITY" = "best" ]; then
+              $YT_CMD -f "bestvideo+bestaudio" --merge-output-format mp4 \
+                     --output "downloaded_file.%(ext)s" "$URL"
+            else
+              $YT_CMD -f "bestvideo[height<=${QUALITY}]+bestaudio/best[height<=${QUALITY}]" \
+                     --merge-output-format mp4 \
+                     --output "downloaded_file.%(ext)s" "$URL"
+            fi
+          fi
           
-          # Save image name for next step
-          echo "FULL_IMAGE=$FULL_IMAGE" >> $GITHUB_ENV
+          # Get the actual downloaded filename
+          DOWNLOADED_FILE=$(ls downloaded_file.* 2>/dev/null | head -n1)
+          if [ -z "$DOWNLOADED_FILE" ]; then
+            echo "❌ Download failed!"
+            exit 1
+          fi
           
-          # Create safe filename
-          SAFE_NAME=$(echo "$IMAGE" | sed 's/[\\/:*?"<>|]/_/g' | sed 's/:/_/g')
-          echo "SAFE_NAME=$SAFE_NAME" >> $GITHUB_ENV
-          echo "✅ Successfully pulled: $FULL_IMAGE"
+          mv "$DOWNLOADED_FILE" downloaded_file
+          ls -lh downloaded_file
+          
+          # Extract video title
+          TITLE=$(yt-dlp --get-title "$URL" 2>/dev/null | sed 's/[\\/:*?"<>|]/_/g')
+          echo "TITLE=$TITLE" >> $GITHUB_ENV
 
-      - name: 💾 Save image to tar file
-        id: save
+      - name: 🧠 Prepare folder structure
         run: |
-          # Final directory: docker-images/image-name/
-          FINAL_DIR="docker-images/${{ env.SAFE_NAME }}"
+          if [ -z "${{ env.TITLE }}" ]; then
+            SAFE_NAME="youtube_video_$(date +%Y%m%d_%H%M%S)"
+          else
+            SAFE_NAME="${{ env.TITLE }}"
+          fi
+          
+          SAFE_NAME=$(echo "$SAFE_NAME" | sed 's/[\\/:*?"<>|]/_/g')
+          
+          if [ "${{ github.event.inputs.format }}" = "audio" ]; then
+            CAT="audio"
+          else
+            CAT="video"
+          fi
+          
+          echo "CAT=$CAT" >> $GITHUB_ENV
+          echo "SAFE_NAME=$SAFE_NAME" >> $GITHUB_ENV
+          echo "✅ Category: $CAT → Subfolder: $SAFE_NAME"
+
+      - name: 🗜️ Compress and split
+        run: |
+          FINAL_DIR="downloads/${{ env.CAT }}/${{ env.SAFE_NAME }}"
           mkdir -p "$FINAL_DIR"
           
-          # Remove previous files
-          rm -f "$FINAL_DIR"/*.tar*
+          rm -f "$FINAL_DIR"/*.7z*
           
-          # Save image as tar
-          TAR_FILE="$FINAL_DIR/image.tar"
-          docker save "${{ env.FULL_IMAGE }}" -o "$TAR_FILE"
-          
-          # Display file info
-          echo "📊 Tar file size:"
-          ls -lh "$TAR_FILE"
-          
-          # Compress if requested
-          if [ "${{ github.event.inputs.compress }}" = "true" ]; then
-            echo "🗜️ Compressing with gzip..."
-            
-            # Parallel compression with pigz for speed
-            pigz -6 -p 4 "$TAR_FILE"
-            COMPRESSED_FILE="${TAR_FILE}.gz"
-            
-            # Remove original tar file
-            rm -f "$TAR_FILE"
-            
-            echo "✅ Compressed file:"
-            ls -lh "$COMPRESSED_FILE"
-            
-            # Split if file is large
-            FILE_SIZE=$(stat -c%s "$COMPRESSED_FILE")
-            SPLIT_SIZE_BYTES=$(echo "${{ github.event.inputs.split_size }}" | sed 's/m/*1048576/' | sed 's/g/*1073741824/' | bc)
-            
-            if [ $FILE_SIZE -gt $SPLIT_SIZE_BYTES ]; then
-              echo "📦 Splitting file into ${{ github.event.inputs.split_size }} chunks"
-              cd "$FINAL_DIR"
-              split -b "${{ github.event.inputs.split_size }}" -d "image.tar.gz" "image.tar.gz.part"
-              rm -f "image.tar.gz"
-              echo "✅ File split into parts:"
-              ls -lh image.tar.gz.part*
-              cd -
-            fi
+          if [ -z "${{ github.event.inputs.password }}" ]; then
+            7z a -mhe=on -mx=3 -v${{ github.event.inputs.split_size }} "$FINAL_DIR/archive.7z" "./downloaded_file"
           else
-            # If not compressing, check if tar needs splitting
-            FILE_SIZE=$(stat -c%s "$TAR_FILE")
-            SPLIT_SIZE_BYTES=$(echo "${{ github.event.inputs.split_size }}" | sed 's/m/*1048576/' | sed 's/g/*1073741824/' | bc)
-            
-            if [ $FILE_SIZE -gt $SPLIT_SIZE_BYTES ]; then
-              echo "📦 Splitting file into ${{ github.event.inputs.split_size }} chunks"
-              cd "$FINAL_DIR"
-              split -b "${{ github.event.inputs.split_size }}" -d "image.tar" "image.tar.part"
-              rm -f "image.tar"
-              echo "✅ File split into parts:"
-              ls -lh image.tar.part*
-              cd -
-            fi
+            7z a -p"${{ github.event.inputs.password }}" -mhe=on -mx=3 -v${{ github.event.inputs.split_size }} "$FINAL_DIR/archive.7z" "./downloaded_file"
           fi
           
-          # Output for later steps
-          echo "FINAL_DIR=$FINAL_DIR" >> $GITHUB_ENV
+          echo "✅ File saved in $FINAL_DIR"
+          ls -lh "$FINAL_DIR"
 
-      - name: 📝 Create metadata file
-        run: |
-          FINAL_DIR="${{ env.FINAL_DIR }}"
-          
-          # Create info file
-          cat > "$FINAL_DIR/README.md" << EOF
-          # Docker Image: ${{ github.event.inputs.image_name }}
-          
-          ## Image Information
-          - **Original Name**: ${{ github.event.inputs.image_name }}
-          - **Full Address**: ${{ env.FULL_IMAGE }}
-          - **Download Date**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-          - **Compression**: ${{ github.event.inputs.compress }}
-          - **Chunk Size**: ${{ github.event.inputs.split_size }}
-          
-          ## How to Restore the Image
-          
-          ### If compressed with gzip
-          \`\`\`bash
-          # For single compressed file
-          gunzip -c image.tar.gz | docker load
-          
-          # If split into parts
-          cat image.tar.gz.part* | gunzip | docker load
-          \`\`\`
-          
-          ### If uncompressed tar file
-          \`\`\`bash
-          # Regular tar file
-          docker load -i image.tar
-          
-          # If split into parts
-          cat image.tar.part* > image.tar
-          docker load -i image.tar
-          \`\`\`
-          
-          ## Useful Commands
-          - **View loaded images**: \`docker images\`
-          - **Run container from this image**: \`docker run -it ${{ github.event.inputs.image_name }}\`
-          
-          ## Technical Information
-          - **OS**: Ubuntu 22.04
-          - **File Created**: $(date -Iseconds)
-          EOF
-          
-          # Save image inspection data
-          docker inspect "${{ env.FULL_IMAGE }}" > "$FINAL_DIR/image_info.json" 2>/dev/null || echo "Unable to save image info"
-          
-          echo "✅ Metadata saved"
-
-      - name: 📝 Commit and push to repository
+      - name: 📝 Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docker-images/
-          git commit -m "🐳 Add Docker image: ${{ github.event.inputs.image_name }}"
-          
-      - name: 🧹 Cleanup temporary files
-        if: always()
-        run: |
-          # Remove local images to free space
-          docker rmi "${{ env.FULL_IMAGE }}" || true
-          docker system prune -f || true
-          echo "✅ Cleanup completed"
+          git add downloads/
+          git commit -m "Add YouTube download: ${{ env.SAFE_NAME }}" || echo "Nothing to commit"
+          git push
