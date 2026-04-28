@@ -1,4 +1,4 @@
-name: '📥 YouTube Download & Archive'
+name: '📥 YouTube Download & Archive (Auto-format)'
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ on:
           - 'video'
           - 'audio'
       quality:
-        description: '🎬 Quality (best, 1080p, 720p, 480p, worst)'
+        description: '🎬 Quality preference (best, 1080p, 720p, 480p, worst)'
         required: false
         type: string
         default: 'best'
@@ -26,7 +26,7 @@ on:
         type: string
         default: ''
       split_size:
-        description: '📦 Split size per part (default: 95m) e.g., 95m, 100m, 200m'
+        description: '📦 Split size per part (default: 95m)'
         required: false
         type: string
         default: '95m'
@@ -44,15 +44,21 @@ jobs:
       - name: ⚙️ Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y p7zip-full file
-          sudo apt-get install -y ffmpeg  # Required for youtube-dl/yt-dlp
-          
-      - name: 📥 Install yt-dlp (YouTube downloader)
+          sudo apt-get install -y p7zip-full file ffmpeg
+
+      - name: 📥 Install yt-dlp
         run: |
           sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
           sudo chmod a+rx /usr/local/bin/yt-dlp
 
-      - name: 📊 Download from YouTube
+      - name: 🍪 Set up cookies (if available)
+        run: |
+          if [ -n "${{ secrets.YT_COOKIES }}" ]; then
+            echo "${{ secrets.YT_COOKIES }}" > cookies.txt
+            echo "✅ Cookies loaded"
+          fi
+
+      - name: 📊 Download from YouTube (Auto-format fallback)
         id: download
         run: |
           URL="${{ github.event.inputs.youtube_url }}"
@@ -60,52 +66,96 @@ jobs:
           QUALITY="${{ github.event.inputs.quality }}"
           
           echo "Downloading from: $URL"
-          echo "Format: $FORMAT | Quality: $QUALITY"
+          echo "Format: $FORMAT | Preferred quality: $QUALITY"
           
-          # Set yt-dlp options based on format
+          # Base yt-dlp command
+          YT_CMD="yt-dlp --no-check-certificate"
+          
+          # Add cookies if available
+          [ -f "cookies.txt" ] && YT_CMD="$YT_CMD --cookies cookies.txt"
+          
+          # Download with automatic fallback formats
           if [ "$FORMAT" = "audio" ]; then
-            yt-dlp -f "bestaudio" --extract-audio --audio-format mp3 \
+            # Try bestaudio, fallback to any audio
+            $YT_CMD -f "bestaudio/best" \
+                   --extract-audio --audio-format mp3 \
+                   --output "downloaded_file.%(ext)s" "$URL" || \
+            $YT_CMD -f "worstaudio/worst" \
+                   --extract-audio --audio-format mp3 \
                    --output "downloaded_file.%(ext)s" "$URL"
           else
-            # For video, ensure we get video+audio
-            if [ "$QUALITY" = "best" ]; then
-              yt-dlp -f "bestvideo+bestaudio" --merge-output-format mp4 \
-                     --output "downloaded_file.%(ext)s" "$URL"
-            else
-              yt-dlp -f "bestvideo[height<=${QUALITY}]+bestaudio/best[height<=${QUALITY}]" \
-                     --merge-output-format mp4 \
-                     --output "downloaded_file.%(ext)s" "$URL"
-            fi
+            # Video download with progressive fallbacks
+            case "$QUALITY" in
+              "best")
+                # Try best video+audio combo, fallback to best single format
+                $YT_CMD -f "bestvideo+bestaudio/best" \
+                       --merge-output-format mp4 \
+                       --output "downloaded_file.%(ext)s" "$URL" || \
+                $YT_CMD -f "best" \
+                       --output "downloaded_file.%(ext)s" "$URL"
+                ;;
+              "1080p")
+                $YT_CMD -f "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best" \
+                       --merge-output-format mp4 \
+                       --output "downloaded_file.%(ext)s" "$URL" || \
+                $YT_CMD -f "best[height<=1080]" \
+                       --output "downloaded_file.%(ext)s" "$URL"
+                ;;
+              "720p")
+                $YT_CMD -f "bestvideo[height<=720]+bestaudio/best[height<=720]/best" \
+                       --merge-output-format mp4 \
+                       --output "downloaded_file.%(ext)s" "$URL" || \
+                $YT_CMD -f "best[height<=720]" \
+                       --output "downloaded_file.%(ext)s" "$URL"
+                ;;
+              "480p")
+                $YT_CMD -f "bestvideo[height<=480]+bestaudio/best[height<=480]/best" \
+                       --merge-output-format mp4 \
+                       --output "downloaded_file.%(ext)s" "$URL" || \
+                $YT_CMD -f "best[height<=480]" \
+                       --output "downloaded_file.%(ext)s" "$URL"
+                ;;
+              "worst")
+                $YT_CMD -f "worstvideo+worstaudio/worst" \
+                       --merge-output-format mp4 \
+                       --output "downloaded_file.%(ext)s" "$URL"
+                ;;
+              *)
+                # Custom quality or default to best
+                $YT_CMD -f "bestvideo[height<=${QUALITY}]+bestaudio/best[height<=${QUALITY}]/best" \
+                       --merge-output-format mp4 \
+                       --output "downloaded_file.%(ext)s" "$URL" || \
+                $YT_CMD -f "best" \
+                       --output "downloaded_file.%(ext)s" "$URL"
+                ;;
+            esac
           fi
           
-          # Get the actual downloaded filename
+          # Check if download succeeded
           DOWNLOADED_FILE=$(ls downloaded_file.* 2>/dev/null | head -n1)
           if [ -z "$DOWNLOADED_FILE" ]; then
-            echo "❌ Download failed!"
+            echo "❌ Download failed! Checking available formats..."
+            yt-dlp --list-formats "$URL"
             exit 1
           fi
           
           mv "$DOWNLOADED_FILE" downloaded_file
           ls -lh downloaded_file
           
-          # Extract video title for folder name
-          TITLE=$(yt-dlp --get-title "$URL" | sed 's/[\\/:*?"<>|]/_/g')
+          # Extract video title
+          TITLE=$(yt-dlp --get-title "$URL" 2>/dev/null | sed 's/[\\/:*?"<>|]/_/g')
           echo "TITLE=$TITLE" >> $GITHUB_ENV
 
-      - name: 🧠 Detect file type and prepare folder
-        id: classify
+      - name: 🧠 Prepare folder structure
         run: |
-          # Sanitize title for folder name
           if [ -z "${{ env.TITLE }}" ]; then
             SAFE_NAME="youtube_video_$(date +%Y%m%d_%H%M%S)"
           else
             SAFE_NAME="${{ env.TITLE }}"
           fi
           
-          # Remove invalid characters
           SAFE_NAME=$(echo "$SAFE_NAME" | sed 's/[\\/:*?"<>|]/_/g')
           
-          # Set category based on format choice
           if [ "${{ github.event.inputs.format }}" = "audio" ]; then
             CAT="audio"
           else
@@ -116,16 +166,13 @@ jobs:
           echo "SAFE_NAME=$SAFE_NAME" >> $GITHUB_ENV
           echo "✅ Category: $CAT → Subfolder: $SAFE_NAME"
 
-      - name: 🗜️ Compress and split (with optional password)
+      - name: 🗜️ Compress and split
         run: |
-          # Final directory: downloads/category/video_title/
           FINAL_DIR="downloads/${{ env.CAT }}/${{ env.SAFE_NAME }}"
           mkdir -p "$FINAL_DIR"
           
-          # Remove existing files in that subfolder to avoid conflicts
           rm -f "$FINAL_DIR"/*.7z*
           
-          # Compression
           if [ -z "${{ github.event.inputs.password }}" ]; then
             7z a -mhe=on -mx=3 -v${{ github.event.inputs.split_size }} "$FINAL_DIR/archive.7z" "./downloaded_file"
           else
@@ -135,10 +182,10 @@ jobs:
           echo "✅ File saved in $FINAL_DIR"
           ls -lh "$FINAL_DIR"
 
-      - name: 📝 Commit and push to repository
+      - name: 📝 Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add downloads/
-          git commit -m "Add YouTube download: ${{ env.SAFE_NAME }} (format: ${{ github.event.inputs.format }})" || echo "Nothing to commit"
+          git commit -m "Add YouTube download: ${{ env.SAFE_NAME }}" || echo "Nothing to commit"
           git push
