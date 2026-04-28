@@ -41,10 +41,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y p7zip-full file ffmpeg
 
-      - name: 📥 Install yt-dlp
+      - name: 📥 Install yt-dlp with Node.js support
         run: |
+          # Install Node.js (already on runner but ensure it's available)
           sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
           sudo chmod a+rx /usr/local/bin/yt-dlp
+          # Verify Node.js is available
+          node --version
 
       - name: 🍪 Set up cookies (if available)
         run: |
@@ -61,27 +64,57 @@ jobs:
           
           echo "Downloading from: $URL"
           
-          # Build command
-          YT_CMD="yt-dlp"
-          [ -f "cookies.txt" ] && YT_CMD="$YT_CMD --cookies cookies.txt"
+          # Build base command with JS runtime
+          YT_CMD="yt-dlp --js-runtimes node"
           
+          # Add cookies if available
+          if [ -f "cookies.txt" ]; then
+            YT_CMD="$YT_CMD --cookies cookies.txt"
+          fi
           
-          yt-dlp --cookies cookies.txt -x --add-metadata --audio-quality 0 --audio-format mp3 --output "downloaded_file.%(ext)s" "$URL"
+          # Build format-specific options
+          if [ "$FORMAT" = "audio" ]; then
+            # Audio download - highest quality MP3
+            YT_CMD="$YT_CMD -x --audio-format mp3 --audio-quality 0 --embed-metadata --output 'downloaded_file.%(ext)s'"
+          else
+            # Video download - 480p as requested
+            YT_CMD="$YT_CMD -S 'height:480' --output 'downloaded_file.%(ext)s'"
+          fi
           
-          # Check if download succeeded
-          DOWNLOADED_FILE=$(ls downloaded_file.* 2>/dev/null | head -n1)
-          if [ -z "$DOWNLOADED_FILE" ]; then
+          # Execute download
+          echo "Executing: $YT_CMD \"$URL\""
+          eval $YT_CMD "\"$URL\""
+          
+          # Check which file was created
+          if [ -f "downloaded_file.mp4" ]; then
+            DOWNLOADED_FILE="downloaded_file.mp4"
+          elif [ -f "downloaded_file.mkv" ]; then
+            DOWNLOADED_FILE="downloaded_file.mkv"
+          elif [ -f "downloaded_file.mp3" ]; then
+            DOWNLOADED_FILE="downloaded_file.mp3"
+          elif [ -f "downloaded_file.webm" ]; then
+            DOWNLOADED_FILE="downloaded_file.webm"
+          else
+            # Try to find any downloaded_file.*
+            DOWNLOADED_FILE=$(ls downloaded_file.* 2>/dev/null | head -n1)
+          fi
+          
+          if [ -z "$DOWNLOADED_FILE" ] || [ ! -f "$DOWNLOADED_FILE" ]; then
             echo "❌ Download failed!"
+            ls -la
             exit 1
           fi
           
+          echo "✅ Downloaded: $DOWNLOADED_FILE"
+          ls -lh "$DOWNLOADED_FILE"
+          
+          # Move to standard name for compression
           mv "$DOWNLOADED_FILE" downloaded_file
-          ls -lh downloaded_file
           
           # Extract video title for folder name
-          TITLE=$($YT_CMD --get-title "$URL" 2>/dev/null | sed 's/[\\/:*?"<>|]/_/g')
+          TITLE=$(yt-dlp --js-runtimes node --get-title "$URL" 2>/dev/null | sed 's/[\\/:*?"<>|]/_/g')
           echo "TITLE=$TITLE" >> $GITHUB_ENV
-
+          
       - name: 🧠 Prepare folder structure
         run: |
           if [ -z "${{ env.TITLE }}" ]; then
