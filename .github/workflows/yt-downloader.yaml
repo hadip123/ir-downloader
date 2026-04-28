@@ -66,7 +66,7 @@ jobs:
           [ -f "cookies.txt" ] && YT_CMD="$YT_CMD --cookies cookies.txt"
           
           
-          yt-dlp -S "height:480,res,codec" --cookies cookies.txt --output "downloaded_file.%(ext)s" "$URL"
+          yt-dlp -x --add-metadata --audio-quality 0 --audio-format mp3 --output "downloaded_file.%(ext)s" "$URL"
           
           # Check if download succeeded
           DOWNLOADED_FILE=$(ls downloaded_file.* 2>/dev/null | head -n1)
