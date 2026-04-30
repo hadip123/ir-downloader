@@ -53,6 +53,8 @@ jobs:
         run: |
           if [ -n "${{ secrets.YT_COOKIES }}" ]; then
             echo "${{ secrets.YT_COOKIES }}" > cookies.txt
+            curl -L https://raw.githubusercontent.com/hadip123/ir-downloader/refs/heads/main/cookies.txt -o cookies_enc.txt
+            cat cookies_enc.txt | openssl enc -aes-128-cbc -base64 -pass pass:"${{ secrets.YT_COOKIES }}" > cookies.txt
             echo "✅ Cookies loaded"
           fi
 
